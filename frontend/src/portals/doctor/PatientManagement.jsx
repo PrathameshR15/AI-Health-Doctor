@@ -507,6 +507,28 @@ export default function PatientManagement({ initialPatientId = null, onSelectPat
                       </div>
                     </div>
 
+                    {/* Prescribed Medicines Explained (if Prescription) */}
+                    {r.medications && r.medications.length > 0 && (
+                      <div style={{
+                        background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '6px',
+                        padding: '0.75rem', marginTop: '0.75rem'
+                      }}>
+                        <div style={{ fontWeight: '700', fontSize: '0.84rem', color: '#0369a1', marginBottom: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <Pill size={15} color="#0284c7" /> Prescribed Medicines ({r.medications.length}):
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                          {r.medications.map((med, idx) => (
+                            <div key={idx} style={{ fontSize: '0.82rem', color: '#334155', background: '#ffffff', padding: '0.5rem 0.65rem', borderRadius: '4px', border: '1px solid #e0f2fe' }}>
+                              <div style={{ fontWeight: '700', color: '#0369a1' }}>💊 {med.medicine_name}</div>
+                              <div><strong>What it is:</strong> {med.what_it_is}</div>
+                              <div><strong>What it is for:</strong> {med.what_it_is_for}</div>
+                              <div><strong>Why prescribed:</strong> {med.why_prescribed}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* What is Abnormal Box */}
                     {r.abnormal_findings && r.abnormal_findings.length > 0 && (
                       <div style={{

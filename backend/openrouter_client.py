@@ -7,7 +7,7 @@ from backend.config import settings
 from backend.medical_knowledge import search_medical_knowledge, get_sources_citation_list
 from backend.emergency_triage import evaluate_emergency_triage
 from backend.clinical_nlp import clinical_extractor
-from backend.lab_report_parser import parse_lab_report_rows, CLINICAL_REFERENCE_CATALOG
+from backend.lab_report_parser import parse_lab_report_rows, extract_prescription_medications, CLINICAL_REFERENCE_CATALOG
 
 SYSTEM_PROMPT = """You are Smart Health AI, an advanced clinical decision-support and patient health education assistant.
 You operate with the highest ethical and medical safety standards.
@@ -1793,20 +1793,24 @@ Return strictly valid JSON matching this schema:
             "doctor_review_disclaimer": "AI Virtual Doctor clinical decision-support only. Definitive diagnosis, prescription confirmation, and final treatment approval must be conducted by a licensed physician in the Doctor Portal."
         }
 
-    # --- Feature 2: Medical Report Analysis ---
+    # --- Feature 2: Medical Report & Prescription Analysis ---
     async def analyze_report_text(
         self,
         report_text: str,
         file_name: str,
-        parsed_rows: Optional[List[Dict[str, Any]]] = None
+        parsed_rows: Optional[List[Dict[str, Any]]] = None,
+        image_data_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Interprets multi-panel lab reports, blood panels, radiology reports, or discharge summaries.
-        Extracts ALL parameters across ALL sections, identifies what is abnormal, produces a short analysis,
-        and formulates a relevant clinical conclusion for patient and doctor review.
+        Interprets multi-panel lab reports, blood panels, radiology reports, discharge summaries,
+        AND medicine prescriptions (text, PDF, or image).
+        - For lab reports: extracts ALL parameters across ALL sections, flags abnormalities, and summarizes conclusions.
+        - For medicine prescriptions: explains each medicine (what it is, what it is for, why it is prescribed, and precautions).
         """
         if parsed_rows is None:
             parsed_rows = parse_lab_report_rows(report_text).get("rows", [])
+
+        pre_meds = extract_prescription_medications(report_text)
 
         # Format pre-parsed parameter rows so the LLM never drops rows in multi-panel PDFs
         parsed_rows_block = ""
@@ -1821,23 +1825,43 @@ Return strictly valid JSON matching this schema:
             parsed_rows_block = "\nPRE-EXTRACTED PARAMETER ROWS (Include EVERY row below in all_findings):\n" + "\n".join(row_lines) + "\n"
 
         # 1. Try LLM analysis first if API key is configured
-        llm_prompt = f"""You are an expert Clinical Laboratory & Diagnostic AI Assistant.
-Analyze the following multi-panel medical report extracted from '{file_name}'.
+        llm_prompt = f"""You are an expert Clinical Laboratory & Prescription AI Assistant.
+Analyze the following medical document or prescription extracted from '{file_name}'.
 {parsed_rows_block}
-FULL REPORT TEXT:
+FULL DOCUMENT TEXT:
 {report_text[:12000]}
 
 CLINICAL INSTRUCTIONS:
-1. Extract EVERY clinical laboratory test, vital, or diagnostic parameter across ALL sections/panels (e.g., Lipid Profile, Cardiac Risk, Iron Studies, Vitamins, CBC, Liver/Kidney/Thyroid panels). Do NOT stop after the first row or first panel.
-2. For each parameter include: finding (Parameter Name), patient_value (with unit), normal_range (Reference Interval), status ("Normal", "High", "Low", or "Abnormal"), unit, section, and explanation.
-3. Specifically isolate WHAT IS ABNORMAL (parameters falling outside normal biological reference ranges or flagged High/Low/Abnormal).
-4. Provide a SHORT ANALYSIS (2 to 3 concise sentences summarizing key clinical takeaways across all panels).
-5. Provide a RELEVANT CONCLUSION (1 to 2 clear sentences explaining what these findings indicate and recommended physician follow-up).
+1. If an IMAGE is attached, carefully read and transcribe ALL handwritten or printed text, medicine names, strengths, schedules, and/or lab test values, units, and reference intervals directly from the image.
+2. If this document contains LABORATORY / DIAGNOSTIC RESULTS:
+   - Extract EVERY clinical laboratory test, vital, or diagnostic parameter across ALL sections/panels (e.g., Lipid Profile, Cardiac Risk, Iron Studies, Vitamins, CBC, Liver/Kidney/Thyroid panels). Do NOT stop after the first row or first panel.
+   - For each parameter include: finding (Parameter Name), patient_value (with unit), normal_range (Reference Interval), status ("Normal", "High", "Low", or "Abnormal"), unit, section, and explanation.
+   - Isolate WHAT IS ABNORMAL in abnormal_findings.
+2. If this document is a MEDICINE PRESCRIPTION or mentions PRESCRIBED MEDICINES (set "is_prescription": true):
+   - Extract EVERY medicine listed in the document (including from any attached image if provided) into "medications".
+   - For EACH medicine, clearly explain in plain patient-friendly language:
+     * "medicine_name": Exact medicine name (and strength/schedule if written on the prescription)
+     * "what_it_is": What type/class of medicine it is (e.g. "Macrolide Antibiotic", "Gastric Acid Suppressant (PPI)")
+     * "what_it_is_for": What condition or symptoms it is used to treat
+     * "why_prescribed": Why a doctor prescribes it and how it helps the body recover
+     * "precautions": Key safety or timing guidance (e.g. take after food, complete full course, do not prescribe new dosages)
+3. Provide a SHORT ANALYSIS (2 to 3 concise sentences summarizing the lab findings and/or prescribed medicines).
+4. Provide a RELEVANT CONCLUSION (1 to 2 clear sentences explaining what the report/prescription indicates and recommended physician follow-up).
 
 Return strictly valid JSON matching this schema:
 {{
+  "is_prescription": bool,
   "short_analysis": str,
   "relevant_conclusion": str,
+  "medications": [
+    {{
+      "medicine_name": str,
+      "what_it_is": str,
+      "what_it_is_for": str,
+      "why_prescribed": str,
+      "precautions": str
+    }}
+  ],
   "abnormal_findings": [
     {{
       "finding": str,
@@ -1862,9 +1886,17 @@ Return strictly valid JSON matching this schema:
   ]
 }}
 """
+        if image_data_url:
+            user_content: Any = [
+                {"type": "text", "text": llm_prompt},
+                {"type": "image_url", "image_url": {"url": image_data_url}}
+            ]
+        else:
+            user_content = llm_prompt
+
         messages = [
-            {"role": "system", "content": "You are a licensed medical AI clinical diagnostics assistant. Extract every single parameter row across all panels. Return strictly valid JSON."},
-            {"role": "user", "content": llm_prompt}
+            {"role": "system", "content": "You are a licensed medical AI clinical diagnostics and medication-education assistant. Extract every single lab parameter row and every prescribed medicine with clear explanations (what it is, what it is for, and why). Return strictly valid JSON."},
+            {"role": "user", "content": user_content}
         ]
 
         llm_raw = await self._call_llm(messages, temperature=0.1, max_tokens=3500)
@@ -1882,9 +1914,18 @@ Return strictly valid JSON matching this schema:
                     except Exception:
                         parsed = None
 
-        if parsed and isinstance(parsed, dict) and "all_findings" in parsed:
+        if parsed and isinstance(parsed, dict) and ("all_findings" in parsed or "medications" in parsed):
             all_f = list(parsed.get("all_findings", []))
             abn_f = list(parsed.get("abnormal_findings", []))
+            meds = list(parsed.get("medications", []))
+            is_rx = bool(parsed.get("is_prescription", False) or len(meds) > 0 or len(pre_meds) > 0)
+
+            # Reconcile with pre_meds so zero detected medicines are dropped without duplicating LLM entries
+            existing_med_blob = " ".join(str(m.get("medicine_name", "")).lower() for m in meds)
+            for pm in pre_meds:
+                pm_words = [w for w in re.findall(r"[a-zA-Z]{4,}", pm["medicine_name"].lower()) if w not in ("tablet", "capsule", "syrup", "daily", "once", "twice", "breakfast", "bedtime", "fever", "when")]
+                if not any(w in existing_med_blob for w in pm_words):
+                    meds.append(pm)
 
             # Reconcile with parsed_rows so zero parsed rows are ever dropped by the LLM
             existing_names = {str(f.get("finding", "")).strip().lower() for f in all_f}
@@ -1909,13 +1950,21 @@ Return strictly valid JSON matching this schema:
             short_an = str(parsed.get("short_analysis", "")).strip()
             conc = str(parsed.get("relevant_conclusion", "")).strip()
             return {
+                "is_prescription": is_rx,
+                "medications": meds,
                 "findings": all_f,
                 "abnormal_findings": abn_f,
                 "has_abnormalities": len(abn_f) > 0,
-                "short_analysis": short_an or "Diagnostic findings evaluated across all laboratory panels.",
-                "relevant_conclusion": conc or (f"Identified {len(abn_f)} abnormal parameters requiring physician correlation." if abn_f else "All evaluated clinical parameters fall within expected biological reference limits."),
+                "short_analysis": short_an or (
+                    f"Prescription reviewed with {len(meds)} medication(s) explained." if is_rx and meds
+                    else "Diagnostic findings evaluated across all laboratory panels."
+                ),
+                "relevant_conclusion": conc or (
+                    f"Identified {len(abn_f)} abnormal parameters requiring physician correlation." if abn_f
+                    else ("Follow the prescribed schedule and consult your doctor if symptoms persist or side effects occur." if is_rx else "All evaluated clinical parameters fall within expected biological reference limits.")
+                ),
                 "explanation": f"{conc} {short_an}".strip(),
-                "disclaimer": "Diagnostic and laboratory reports must be officially verified and approved by a licensed treating physician."
+                "disclaimer": "Diagnostic and prescription reports must be officially verified by a licensed treating physician."
             }
 
         # 2. Deterministic Multi-Panel Clinical Evaluator (Uses all parsed_rows + catalog fallback)
@@ -1990,8 +2039,19 @@ Return strictly valid JSON matching this schema:
 
         abnormal_list = [f for f in findings if f["status"] in ["High", "Low", "Abnormal"]]
         has_abn = len(abnormal_list) > 0
+        is_rx = len(pre_meds) > 0
 
-        if has_abn:
+        if is_rx and not has_abn and (not findings or findings[0].get("finding") == "Clinical Diagnostic Document Parsed"):
+            med_names = [m["medicine_name"] for m in pre_meds]
+            short_analysis = (
+                f"Prescription document analyzed: identified {len(pre_meds)} prescribed medicine(s) ({', '.join(med_names)}), "
+                f"with explanations of what each medicine is, what it treats, and why it is used."
+            )
+            relevant_conclusion = (
+                "Follow your prescribing doctor's exact dosage and timing instructions. "
+                "Review the medicine breakdown below and consult your physician before stopping or changing any medication."
+            )
+        elif has_abn:
             abn_names = [f"{a['finding']} ({a['status']}: {a['patient_value']} vs ref {a['normal_range']})" for a in abnormal_list]
             short_analysis = (
                 f"Document review identified {len(abnormal_list)} parameter(s) outside standard biological reference ranges: {', '.join(abn_names)}."
@@ -2009,13 +2069,15 @@ Return strictly valid JSON matching this schema:
             )
 
         return {
+            "is_prescription": is_rx,
+            "medications": pre_meds,
             "findings": findings,
             "abnormal_findings": abnormal_list,
             "has_abnormalities": has_abn,
             "short_analysis": short_analysis,
             "relevant_conclusion": relevant_conclusion,
             "explanation": f"{relevant_conclusion} {short_analysis}",
-            "disclaimer": "Laboratory and diagnostic reports must be officially verified and signed off by a licensed medical practitioner."
+            "disclaimer": "Laboratory and prescription reports must be officially verified and signed off by a licensed medical practitioner."
         }
 
 openrouter_client = OpenRouterClient()

@@ -321,8 +321,10 @@ def _parse_row_text(line: str, current_section: str) -> Optional[Dict[str, Any]]
     if not param_name or not value_str:
         return None
 
-    # Validate parameter name isn't just a number or noise
+    # Validate parameter name isn't just a number or noise, or a prescription line (Tab/Cap/Syp/Inj/Rx)
     if len(param_name) < 2 or param_name.replace(".", "").isdigit():
+        return None
+    if re.match(r"^(?:rx|tab\.?|tablet|cap\.?|capsule|syp\.?|syrup|inj\.?|injection|oint\.?|drop|drops)\b", param_name, re.IGNORECASE):
         return None
 
     catalog_match = _match_catalog(param_name)
@@ -446,3 +448,66 @@ def parse_lab_report_rows(report_text: str) -> Dict[str, Any]:
         "sections": sections_seen,
         "rows": parsed_rows
     }
+
+
+# Common prescription medication knowledge base for deterministic fallback & enrichment
+# Tuple: (regex_pattern, display_name, what_it_is, what_it_is_for, why_prescribed, precautions)
+MEDICATION_KNOWLEDGE_CATALOG: List[Tuple[str, str, str, str, str, str]] = [
+    (r"\bparacetamol\b|\bacetaminophen\b|\bdolo\b|\bcrocin\b|\btylenol\b", "Paracetamol (Acetaminophen)", "Analgesic & Antipyretic (Pain reliever & fever reducer)", "Fever, headache, body aches, and mild-to-moderate pain", "Reduces fever and relieves pain signals in the central nervous system without irritating the stomach.", "Avoid exceeding daily limits or combining with other acetaminophen-containing medicines; use caution in liver disease."),
+    (r"\bibuprofen\b|\bbrufen\b|\badvil\b|\bmotrin\b", "Ibuprofen", "NSAID (Non-Steroidal Anti-Inflammatory Drug)", "Inflammation, joint/muscle pain, fever, and headache", "Blocks prostaglandin production to reduce swelling, pain, and fever.", "Take with food to protect the stomach; avoid in dengue/bleeding risk, kidney disease, or stomach ulcers."),
+    (r"\bdiclofenac\b|\bvoveran\b", "Diclofenac", "NSAID (Anti-inflammatory painkiller)", "Joint pain, muscle sprains, arthritis, and acute inflammation", "Reduces inflammatory chemicals at the site of pain and swelling.", "Take after meals; avoid prolonged use without physician monitoring due to stomach/kidney risks."),
+    (r"\bazithromycin\b|\bazithral\b|\bazee\b", "Azithromycin", "Macrolide Antibiotic", "Bacterial respiratory infections (throat, sinus, bronchitis), ear, or skin infections", "Stops bacteria from producing proteins needed to grow and multiply.", "Complete the full prescribed course even if you feel better early; only works against bacteria, not viruses."),
+    (r"\bamoxicillin\b|\baugmentin\b|\bmoxikind\b|\bclavulanate\b", "Amoxicillin / Co-Amoxiclav", "Penicillin-class Antibiotic", "Bacterial sinusitis, throat/ear infections, chest infections, and urinary infections", "Kills susceptible bacteria by disrupting their cell wall formation.", "Check for penicillin allergy before use; complete the full prescribed course."),
+    (r"\bcefixime\b|\bceftriaxone\b|\bcephalexin\b", "Cephalosporin Antibiotic (Cefixime/Cephalexin)", "Broad-spectrum Beta-lactam Antibiotic", "Bacterial respiratory, urinary tract, or typhoid/enteric infections", "Destroys bacterial cell walls to clear bacterial infection.", "Report any rash or allergic reaction; finish the prescribed duration."),
+    (r"\bciprofloxacin\b|\blevofloxacin\b|\bofloxacin\b", "Fluoroquinolone Antibiotic", "Broad-spectrum Antibiotic", "Bacterial urinary tract, gastrointestinal, or respiratory infections", "Inhibits bacterial DNA replication to eliminate infection.", "Stay well hydrated; avoid taking simultaneously with calcium/iron supplements or antacids."),
+    (r"\bcetirizine\b|\blevocetirizine\b|\bzyrtec\b|\bxyzal\b", "Cetirizine / Levocetirizine", "Second-generation Antihistamine", "Allergic rhinitis, sneezing, runny nose, itchy eyes, and skin hives", "Blocks histamine (H1) receptors to calm allergy symptoms.", "May cause mild drowsiness in some people; use caution when driving."),
+    (r"\bfexofenadine\b|\ballegra\b|\bloratadine\b", "Fexofenadine / Loratadine", "Non-drowsy Antihistamine", "Seasonal allergies, nasal congestion/sneezing, and urticaria", "Blocks allergic histamine response with minimal sedation.", "Avoid taking fexofenadine with fruit juices (orange/apple/grapefruit) as they reduce absorption."),
+    (r"\bmontelukast\b|\bmontair\b", "Montelukast", "Leukotriene Receptor Antagonist", "Asthma prevention, allergic rhinitis, and airway inflammation", "Blocks leukotrienes that narrow airways and trigger nasal/bronchial inflammation.", "Usually taken in the evening; report any mood or sleep changes to your doctor."),
+    (r"\bomeprazole\b|\bpantoprazole\b|\brabeprazole\b|\besomeprazole\b|\bpan\s*40\b|\bpantocid\b", "Proton Pump Inhibitor (Pantoprazole / Omeprazole)", "Gastric Acid Suppressant (PPI)", "Acid reflux (GERD), heartburn, gastritis, and stomach ulcers", "Reduces stomach acid production by blocking proton pumps in the stomach lining, allowing irritation/ulcers to heal.", "Best taken 30–60 minutes before breakfast on an empty stomach."),
+    (r"\bdomperidone\b|\bondansetron\b|\bemeset\b|\bvomikind\b", "Ondansetron / Domperidone", "Antiemetic / Prokinetic", "Nausea, vomiting, and gastric fullness", "Blocks nausea signaling in the gut and brain to prevent vomiting.", "Stay hydrated with small sips of fluids; follow physician timing instructions."),
+    (r"\bmetformin\b|\bglucophage\b|\bglycomet\b", "Metformin", "Biguanide Antidiabetic Medication", "Type 2 Diabetes / elevated blood glucose", "Lowers liver glucose production and improves the body's insulin sensitivity.", "Take with meals to minimize stomach upset; monitor kidney function periodically."),
+    (r"\batorvastatin\b|\brosuvastatin\b|\bstatin\b|\batorva\b|\brosuvas\b", "Statin (Atorvastatin / Rosuvastatin)", "Lipid-Lowering Statin", "High LDL cholesterol, high total cholesterol, and cardiovascular risk reduction", "Inhibits liver cholesterol production (HMG-CoA reductase) and clears LDL ('bad') cholesterol from the blood.", "Report unexplained muscle pain/weakness; avoid excessive grapefruit juice with atorvastatin."),
+    (r"\baspirin\b|\becosprin\b|\bclopidogrel\b|\bplavix\b", "Aspirin / Clopidogrel", "Antiplatelet Medication", "Cardiovascular protection and prevention of blood clots", "Prevents platelets from clumping together inside blood vessels.", "Watch for unusual bruising or bleeding; never stop prescribed antiplatelets without talking to your cardiologist."),
+    (r"\bamlodipine\b|\btelmisartan\b|\blosartan\b|\bmetoprolol\b|\batenolol\b", "Antihypertensive (Amlodipine / Telmisartan / Beta-blocker)", "Blood Pressure & Cardiac Medication", "Hypertension (high blood pressure) and heart strain protection", "Relaxes blood vessels or reduces heart workload to keep blood pressure in a safe range.", "Do not skip doses abruptly; monitor blood pressure regularly and rise slowly if dizzy."),
+    (r"\bsalbutamol\b|\balbuterol\b|\basthalin\b|\bbudesonide\b", "Bronchodilator / Inhaled Corticosteroid", "Respiratory Inhaler / Airway Medication", "Asthma, wheezing, bronchospasm, and shortness of breath", "Relaxes airway muscles (salbutamol) or calms airway inflammation (budesonide) to make breathing easier.", "Rinse mouth after steroid inhalers; seek urgent care if rescue inhaler is needed frequently."),
+    (r"\bprednisolone\b|\bprednisone\b|\bmethylprednisolone\b|\bdeflazacort\b", "Corticosteroid (Prednisolone / Methylprednisolone)", "Systemic Anti-inflammatory Steroid", "Severe inflammation, allergic flare-ups, asthma exacerbations, or autoimmune conditions", "Suppresses overactive immune and inflammatory pathways quickly.", "Take with food; do not stop suddenly after multi-day use without physician tapering instructions."),
+    (r"\bvitamin\s*d3?\b|\bcholecalciferol\b|\bd[\-\s]*rise\b", "Vitamin D3 (Cholecalciferol)", "Fat-Soluble Vitamin Supplement", "Vitamin D deficiency, bone health, and immune support", "Restores Vitamin D levels to support calcium absorption and bone/muscle strength.", "Take with a meal containing healthy fats for best absorption."),
+    (r"\bvitamin\s*b12\b|\bmethylcobalamin\b|\bcyanocobalamin\b|\bneurobion\b", "Vitamin B12 (Methylcobalamin)", "Water-Soluble Vitamin Supplement", "Vitamin B12 deficiency, nerve tingling, fatigue, and megaloblastic anemia", "Supports red blood cell formation and healthy nerve myelin function.", "Follow prescribed duration and recheck B12 levels as advised."),
+    (r"\bferrous\b|\biron\b|\bferritin\b|\borofer\b|\bautrin\b|\bfolic\s*acid\b", "Iron / Folic Acid Supplement", "Hematinic (Blood-building Supplement)", "Iron deficiency anemia, low ferritin, and low hemoglobin", "Replenishes body iron stores required to produce healthy oxygen-carrying hemoglobin.", "Vitamin C helps absorption; avoid taking at the exact same time as tea, coffee, calcium, or antacids."),
+    (r"\bambroxol\b|\bdextromethorphan\b|\bguaifenesin\b|\bascoryl\b|\bbenadryl\b", "Cough / Mucolytic Syrup", "Antitussive / Expectorant / Mucolytic", "Dry cough, productive phlegm cough, and chest congestion", "Either calms the cough reflex (dry cough) or thins mucus so it clears more easily (wet cough).", "Check whether it is sedating before driving; stay well hydrated."),
+]
+
+
+def extract_prescription_medications(report_text: str) -> List[Dict[str, str]]:
+    """
+    Extracts prescribed medicines from text/PDF prescription reports and returns
+    structured explanations: what it is, what it is for, why prescribed, and precautions.
+    """
+    if not report_text:
+        return []
+
+    found: List[Dict[str, str]] = []
+    seen = set()
+    lines = _normalize_text(report_text).splitlines()
+
+    for line in lines:
+        line_s = line.strip()
+        if not line_s:
+            continue
+        line_l = line_s.lower()
+        for pat, name, what_it_is, what_for, why_rx, prec in MEDICATION_KNOWLEDGE_CATALOG:
+            if re.search(pat, line_l) and name not in seen:
+                seen.add(name)
+                # Preserve exact line snippet (e.g. "Tab. Azithromycin 500mg OD") if concise
+                med_label = line_s if len(line_s) <= 75 else name
+                if name.lower() not in med_label.lower():
+                    med_label = f"{name} ({med_label})"
+                found.append({
+                    "medicine_name": med_label,
+                    "what_it_is": what_it_is,
+                    "what_it_is_for": what_for,
+                    "why_prescribed": why_rx,
+                    "precautions": prec
+                })
+    return found
+

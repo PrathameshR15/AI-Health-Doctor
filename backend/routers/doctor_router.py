@@ -100,6 +100,8 @@ def get_patient_detail(patient_id: int, current_user: User = Depends(require_doc
             "clinical_findings": r.clinical_findings,
             "abnormal_findings": ext.get("abnormal_findings", []),
             "has_abnormalities": ext.get("has_abnormalities", False),
+            "is_prescription": ext.get("is_prescription", False),
+            "medications": ext.get("medications", []),
             "relevant_conclusion": ext.get("relevant_conclusion", ""),
             "short_analysis": ext.get("short_analysis", ""),
             "doctor_review_status": linked_ass.doctor_review_status if linked_ass else "pending",

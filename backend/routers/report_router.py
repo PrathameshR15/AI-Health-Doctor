@@ -2,6 +2,7 @@ import os
 import io
 import json
 import uuid
+import base64
 import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from sqlalchemy.orm import Session
@@ -57,6 +58,7 @@ async def upload_medical_report(
     # 1. Text Extraction (Processed directly in-memory from file_bytes)
     extracted_text = ""
     fhir_data = None
+    image_data_url = None
 
     if file_type == "pdf":
         try:
@@ -70,12 +72,31 @@ async def upload_medical_report(
                 if page_txt.strip():
                     pages_text.append(page_txt)
             extracted_text = "\n\n".join(pages_text).strip()
+
+            # If PDF is scanned (no selectable text), extract embedded image for vision AI
+            if len(extracted_text) < 25:
+                for page in reader.pages[:2]:
+                    try:
+                        imgs = list(getattr(page, "images", []) or [])
+                        if imgs:
+                            img_bytes = imgs[0].data
+                            img = Image.open(io.BytesIO(img_bytes))
+                            mime_sub = (img.format or "png").lower()
+                            b64_img = base64.b64encode(img_bytes).decode("ascii")
+                            image_data_url = f"data:image/{mime_sub};base64,{b64_img}"
+                            extracted_text = f"Scanned PDF Document: {filename} ({len(reader.pages)} page(s)). Image extracted for AI vision reading."
+                            break
+                    except Exception:
+                        pass
         except Exception as e:
             extracted_text = f"Error reading PDF content: {e}"
     elif file_type == "image":
         try:
             img = Image.open(io.BytesIO(file_bytes))
-            extracted_text = f"Diagnostic Image: {filename} ({img.format}, {img.size[0]}x{img.size[1]}px). Clinical scan uploaded for physician review."
+            mime_sub = (img.format or "png").lower()
+            b64_img = base64.b64encode(file_bytes).decode("ascii")
+            image_data_url = f"data:image/{mime_sub};base64,{b64_img}"
+            extracted_text = f"Diagnostic / Prescription Image: {filename} ({img.format}, {img.size[0]}x{img.size[1]}px). Uploaded for AI extraction and physician review."
         except Exception as e:
             extracted_text = f"Diagnostic Image file: {filename}."
     elif file_type == "fhir_json":
@@ -109,15 +130,18 @@ async def upload_medical_report(
     parsed_rows = parsed_report.get("rows", [])
     sections_detected = parsed_report.get("sections", [])
 
-    # 3. Analyze report findings via OpenRouter / Clinical Knowledge Engine
+    # 3. Analyze report findings & prescription medications via OpenRouter / Clinical Knowledge Engine
     analysis = await openrouter_client.analyze_report_text(
         extracted_text,
         filename,
-        parsed_rows=parsed_rows
+        parsed_rows=parsed_rows,
+        image_data_url=image_data_url
     )
     findings = analysis.get("findings", [])
     abnormal_findings = analysis.get("abnormal_findings", [])
     has_abnormalities = analysis.get("has_abnormalities", len(abnormal_findings) > 0)
+    is_prescription = analysis.get("is_prescription", False)
+    medications = analysis.get("medications", [])
     short_analysis = analysis.get("short_analysis", "")
     relevant_conclusion = analysis.get("relevant_conclusion", "")
     explanation = analysis.get("explanation", f"{relevant_conclusion} {short_analysis}".strip())
@@ -125,7 +149,7 @@ async def upload_medical_report(
     # 4. Generate FHIR DiagnosticReport resource
     diag_resource = fhir_service.create_diagnostic_report_resource(
         patient_id=current_user.id,
-        title=f"Lab Report: {filename}",
+        title=f"{'Prescription' if is_prescription else 'Lab Report'}: {filename}",
         conclusion=relevant_conclusion or explanation,
         findings=findings
     )
@@ -142,6 +166,8 @@ async def upload_medical_report(
             "entities": entities,
             "sections_detected": sections_detected,
             "parsed_parameters": parsed_rows,
+            "is_prescription": is_prescription,
+            "medications": medications,
             "abnormal_findings": abnormal_findings,
             "relevant_conclusion": relevant_conclusion,
             "short_analysis": short_analysis,
@@ -159,15 +185,18 @@ async def upload_medical_report(
     assessment = AssessmentRecord(
         patient_id=current_user.id,
         report_id=report.id,
-        title=f"Lab Report: {filename}",
+        title=f"{'Prescription' if is_prescription else 'Lab Report'}: {filename}",
         chief_complaint=f"Medical Document: {filename}. {relevant_conclusion[:140]}",
         symptoms_summary=short_analysis,
         extracted_entities={
+            "is_prescription": is_prescription,
+            "medications": medications,
             "abnormal_findings": abnormal_findings,
             "relevant_conclusion": relevant_conclusion,
             "short_analysis": short_analysis,
             "total_parameters": len(findings)
         },
+        medication_info=medications,
         possible_conditions=[
             {
                 "condition": f"{f.get('finding')} ({f.get('status', 'Abnormal')})",
@@ -210,6 +239,8 @@ async def upload_medical_report(
         "file_type": file_type,
         "extracted_text_preview": extracted_text[:300] + ("..." if len(extracted_text) > 300 else ""),
         "short_analysis": short_analysis,
+        "is_prescription": is_prescription,
+        "medications": medications,
         "abnormal_findings": abnormal_findings,
         "has_abnormalities": has_abnormalities,
         "relevant_conclusion": relevant_conclusion,
@@ -249,6 +280,8 @@ def get_user_reports(current_user: User = Depends(require_patient), db: Session 
             "file_size_bytes": r.file_size_bytes,
             "findings_count": len(r.clinical_findings or []),
             "has_abnormalities": has_abn,
+            "is_prescription": ext_ent.get("is_prescription", False),
+            "medications": ext_ent.get("medications", []),
             "abnormal_count": len(abn_f),
             "abnormal_findings": abn_f,
             "relevant_conclusion": rel_conc,
@@ -294,6 +327,8 @@ def get_report_detail(report_id: int, current_user: User = Depends(get_current_u
         "clinical_findings": report.clinical_findings,
         "abnormal_findings": abn_f,
         "has_abnormalities": has_abn,
+        "is_prescription": ext_ent.get("is_prescription", False),
+        "medications": ext_ent.get("medications", []),
         "relevant_conclusion": rel_conc,
         "short_analysis": short_an,
         "key_observations": report.key_observations,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, FileText, CheckCircle, FileCode, AlertCircle, Eye } from 'lucide-react';
+import { Upload, FileText, CheckCircle, FileCode, AlertCircle, Eye, Pill } from 'lucide-react';
 import { api } from '../../api';
 
 export default function UploadMedicalReports() {
@@ -43,6 +43,20 @@ export default function UploadMedicalReports() {
     }
   };
 
+  const handleViewReport = async (reportId) => {
+    try {
+      const detail = await api.getReportDetail(reportId);
+      setAnalysisResult({
+        ...detail,
+        findings: detail.clinical_findings || [],
+        fhir_diagnostic_report: detail.fhir_bundle
+      });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err) {
+      alert("Unable to load report details: " + err.message);
+    }
+  };
+
   return (
     <div>
       <div className="card-header" style={{ marginBottom: '1.5rem' }}>
@@ -51,7 +65,7 @@ export default function UploadMedicalReports() {
             <Upload size={22} color="var(--primary)" /> Medical Report Analysis
           </h2>
           <p className="card-description">
-            Upload blood work, lab panels, radiology PDFs, scans, or FHIR JSON records.
+            Upload blood work, lab panels, medicine prescriptions, radiology PDFs, scans, or FHIR JSON records.
           </p>
         </div>
       </div>
@@ -163,7 +177,50 @@ export default function UploadMedicalReports() {
             {analysisResult.short_analysis || analysisResult.explanation}
           </div>
 
-          {/* 2. WHAT IS ABNORMAL (Prominently Highlighted) */}
+          {/* 2. PRESCRIBED MEDICINES EXPLAINED (What it is, What it is for, Why) */}
+          {analysisResult.medications && analysisResult.medications.length > 0 && (
+            <div style={{
+              background: '#f0f9ff',
+              border: '1px solid #bae6fd',
+              borderLeft: '4px solid #0284c7',
+              borderRadius: '8px',
+              padding: '1rem',
+              marginBottom: '1rem'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                <Pill size={20} color="#0284c7" />
+                <h4 style={{ margin: 0, fontSize: '0.98rem', fontWeight: '800', color: '#0c4a6e' }}>
+                  Prescribed Medicines Explained ({analysisResult.medications.length})
+                </h4>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {analysisResult.medications.map((med, i) => (
+                  <div key={i} style={{
+                    background: '#ffffff',
+                    padding: '0.85rem 1rem',
+                    borderRadius: '8px',
+                    border: '1px solid #e0f2fe'
+                  }}>
+                    <div style={{ fontWeight: '800', fontSize: '0.96rem', color: '#0369a1', marginBottom: '0.4rem' }}>
+                      💊 {med.medicine_name}
+                    </div>
+                    <div style={{ fontSize: '0.84rem', color: '#334155', lineHeight: '1.5', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                      <div><strong>What it is:</strong> {med.what_it_is}</div>
+                      <div><strong>What it is for:</strong> {med.what_it_is_for}</div>
+                      <div><strong>Why it is used / How it helps:</strong> {med.why_prescribed}</div>
+                      {med.precautions && (
+                        <div style={{ color: '#92400e', background: '#fffbeb', padding: '0.35rem 0.6rem', borderRadius: '6px', marginTop: '0.25rem', fontSize: '0.8rem' }}>
+                          <strong>⚠️ Precautions:</strong> {med.precautions}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 2B. WHAT IS ABNORMAL (Prominently Highlighted) */}
           {analysisResult.abnormal_findings && analysisResult.abnormal_findings.length > 0 ? (
             <div style={{
               background: '#fef2f2',
@@ -349,9 +406,23 @@ export default function UploadMedicalReports() {
                 </div>
 
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <span className="badge badge-routine">
-                    {r.findings_count} Parameters
-                  </span>
+                  {r.medications && r.medications.length > 0 ? (
+                    <span className="badge badge-routine" style={{ background: '#e0f2fe', color: '#0369a1' }}>
+                      💊 {r.medications.length} Medicines
+                    </span>
+                  ) : (
+                    <span className="badge badge-routine">
+                      {r.findings_count} Parameters
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={() => handleViewReport(r.id)}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+                  >
+                    <Eye size={14} /> View Result
+                  </button>
                 </div>
               </div>
             ))}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, Eye, FileCode, CheckCircle, AlertCircle, UserCheck } from 'lucide-react';
+import { FileText, Eye, FileCode, CheckCircle, AlertCircle, UserCheck, Pill } from 'lucide-react';
 import { api } from '../../api';
 
 export default function MedicalRecordAnalysisView() {
@@ -101,7 +101,51 @@ export default function MedicalRecordAnalysisView() {
               </div>
             )}
 
-            {/* 2. WHAT IS ABNORMAL (Prominently Highlighted for Doctor) */}
+            {/* 2. PRESCRIBED MEDICINES EXPLAINED */}
+            {selectedReport.medications && selectedReport.medications.length > 0 && (
+              <div style={{
+                background: '#f0f9ff',
+                border: '1px solid #bae6fd',
+                borderLeft: '4px solid #0284c7',
+                borderRadius: '8px',
+                padding: '1rem',
+                marginBottom: '1rem'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.7rem' }}>
+                  <Pill size={20} color="#0284c7" />
+                  <h4 style={{ margin: 0, fontSize: '0.98rem', fontWeight: '800', color: '#0c4a6e' }}>
+                    Prescribed Medicines Extracted ({selectedReport.medications.length})
+                  </h4>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                  {selectedReport.medications.map((med, i) => (
+                    <div key={i} style={{
+                      background: '#ffffff',
+                      padding: '0.8rem 0.95rem',
+                      borderRadius: '6px',
+                      border: '1px solid #e0f2fe',
+                      fontSize: '0.84rem',
+                      color: '#334155',
+                      lineHeight: '1.45'
+                    }}>
+                      <div style={{ fontWeight: '800', fontSize: '0.94rem', color: '#0369a1', marginBottom: '0.3rem' }}>
+                        💊 {med.medicine_name}
+                      </div>
+                      <div><strong>What it is:</strong> {med.what_it_is}</div>
+                      <div><strong>What it is for:</strong> {med.what_it_is_for}</div>
+                      <div><strong>Why prescribed:</strong> {med.why_prescribed}</div>
+                      {med.precautions && (
+                        <div style={{ color: '#92400e', marginTop: '0.2rem', fontSize: '0.8rem' }}>
+                          <strong>Precautions:</strong> {med.precautions}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 2B. WHAT IS ABNORMAL (Prominently Highlighted for Doctor) */}
             {selectedReport.abnormal_findings && selectedReport.abnormal_findings.length > 0 ? (
               <div style={{
                 background: '#fef2f2',
